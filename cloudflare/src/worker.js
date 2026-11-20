@@ -19,7 +19,7 @@ body{display:flex;justify-content:center;}
 main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;background:#020502;border:1px solid #183818;box-shadow:0 0 30px #001500;}
 .top{padding:13px 16px;border-bottom:1px solid #174117;display:flex;justify-content:space-between;align-items:center;background:#071007;}
 .brand{font-weight:bold;color:#65ff65;}
-.brand:before{content:"#§$";color:#3d9f3d;}
+.brand:before{content:"";}
 .status{font-size:12px;color:#75d875;}
 .setup{margin:auto;width:min(620px,90%);display:grid;gap:12px;padding:25px;border:1px solid #205820;background:#050b05;box-shadow:0 0 20px #001800;}
 .setup h2{margin:0;color:#7cff7c;font-size:18px;}
@@ -94,9 +94,9 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
 </head>
 <body>
 <main>
-  <div class="top"><div class="brand">CHAT</div><div id="status" class="status">[ OFFLINE ]</div></div>
+  <div class="top"><div class="brand">$$</div><div id="status" class="status">[ OFFLINE ]</div></div>
   <section id="setup" class="setup">
-    <h2>./join-room</h2><p>Enter your identity and private room code.</p>
+    <h2>hello there</h2><p>Enter your identity and private room code.</p>
     <input id="name" maxlength="40" placeholder="username">
     <input id="room" maxlength="64" placeholder="room_code">
     <button id="join">[ EXECUTE JOIN ]</button>
