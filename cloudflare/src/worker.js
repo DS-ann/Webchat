@@ -106,6 +106,7 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
     </div>
     <div id="callview" class="callview">
       <div id="callinfo" class="callinfo"></div>
+      <audio id="remoteAudio" autoplay></audio>
       <video id="remote" class="remote" autoplay playsinline></video>
       <video id="local" class="local" autoplay muted playsinline></video>
       <div class="callcontrols"><button id="leave2" class="danger">[end a.v...]</button></div>
@@ -128,7 +129,7 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
   </section>
 </main>
 <script>
-let name='', room='', ws=null, pc=null, localStream=null, pendingCandidates=[], callKind='', callTimeout=null, incomingOffer=null, incomingCaller='', replyTo=null, presenceTimer=null;
+let name='', room='', ws=null, pc=null, localStream=null, pendingCandidates=[], callKind='', callTimeout=null, incomingOffer=null, incomingCaller='', replyTo=null, presenceTimer=null, activeCallId=null, reconnectTimer=null, reconnectAttempt=0, signalQueue=[], disconnectedTimer=null, peerStatus='WAITING...';
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const FALLBACK_ICE_SERVERS=[{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
@@ -176,69 +177,395 @@ function add(m){
 async function history(){const r=await fetch('/api/messages?room='+encodeURIComponent(room));if(r.ok){for(const m of await r.json())add(m);}}
 async function send(){const text=$('text').value.trim();if(!text)return;$('text').value='';const replyId=replyTo&&replyTo.id?replyTo.id:null;const r=await fetch('/api/messages',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({room,name,text,replyTo:replyId})});if(!r.ok){alert('message: send failed');$('text').value=text;return;}cancelReply();}
 async function uploadFile(){const input=$('file');const f=input.files[0];if(!f)return;const MAX=1400000;async function compressImage(file){if(!file.type.startsWith('image/')||file.type==='image/gif'||file.type==='image/svg+xml')return file;if(file.size<=MAX)return file;let bitmap;try{bitmap=await createImageBitmap(file);}catch{return file;}let w=bitmap.width,h=bitmap.height;const maxDim=1920;if(Math.max(w,h)>maxDim){const scale=maxDim/Math.max(w,h);w=Math.max(1,Math.round(w*scale));h=Math.max(1,Math.round(h*scale));}const canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;const ctx=canvas.getContext('2d');if(!ctx){bitmap.close();return file;}ctx.drawImage(bitmap,0,0,w,h);bitmap.close();for(const quality of [0.85,0.75,0.65,0.55,0.45,0.35,0.25]){const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',quality));if(blob&&blob.size<=MAX){const base=(file.name||'image').replace(/\.[^.]+$/,'');return new File([blob],base+'.jpg',{type:'image/jpeg',lastModified:Date.now()});}}return file;}try{setStatus('COMPRESSING...');const upload=await compressImage(f);if(upload.size>MAX){alert('attachment is too large even after compression. Maximum is 1.4 MB.');input.value='';setStatus('ONLINE');return;}setStatus('UPLOADING...');const fd=new FormData();fd.append('room',room);fd.append('name',name);fd.append('file',upload,upload.name);const r=await fetch('/api/attachments',{method:'POST',body:fd});if(!r.ok){let e='upload failed';try{e=(await r.json()).error||e;}catch{}throw new Error(e);}input.value='';setStatus('ONLINE');}catch(e){console.error(e);input.value='';setStatus('UPLOAD FAILED');alert(e.message||'attachment upload failed');}}
-function sendSignal(x){if(ws&&ws.readyState===WebSocket.OPEN){ws.send(JSON.stringify(x));}}
-function updateCallButton(state){const b=callKind==='video'?$('video'):$('voice');if(!b)return;const labels={connecting:'[connecting...]',connected:callKind==='video'?'[connected v]':'[connected a]',failed:'[call failed]',waiting:'[calling...]',idle:callKind==='video'?'[start v...]':'[start a...]'};b.textContent=labels[state]||labels.idle;}
-function showIncoming(x){incomingOffer=x;incomingCaller=x.from||'unknown';$('caller').textContent='['+(x.video?'video':'voice')+' call from '+incomingCaller+']';$('incoming').style.display='block';setStatus('INCOMING CALL');}
-function hideIncoming(){incomingOffer=null;incomingCaller='';$('incoming').style.display='none';}
-function startTimeout(){clearTimeout(callTimeout);callTimeout=setTimeout(()=>{if(pc&&pc.connectionState!=='connected'){setStatus('CALL TIMEOUT');updateCallButton('failed');hangup(false);}},30000);}
-function clearCallTimeout(){if(callTimeout){clearTimeout(callTimeout);callTimeout=null;}}
-function showVideoMode(){if(callKind==='video'){$('chat').classList.add('video-mode');$('callinfo').textContent='[ VIDEO CALL ]';}}
-function hideVideoMode(){$('chat').classList.remove('video-mode');$('remote').srcObject=null;$('local').srcObject=null;}
-function makePeer(video){pc=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});pendingCandidates=[];pc.onicecandidate=e=>{if(e.candidate){sendSignal({type:'candidate',candidate:e.candidate});}};pc.ontrack=e=>{$('remote').srcObject=e.streams[0];$('remote').play().catch(()=>{});if(video)showVideoMode();setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');};pc.onconnectionstatechange=()=>{const s=pc?.connectionState;if(s==='connecting'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='disconnected'){setStatus('CALL DISCONNECTED');updateCallButton('failed');}else if(s==='failed'){setStatus('CALL FAILED');updateCallButton('failed');}else if(s==='closed'){setStatus('ONLINE');}};pc.oniceconnectionstatechange=()=>{const s=pc?.iceConnectionState;if(s==='checking'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'||s==='completed'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='failed'){setStatus('ICE FAILED');updateCallButton('failed');}};return pc;}
-async function addPending(){if(!pc||!pc.remoteDescription)return;for(const c of pendingCandidates){try{await pc.addIceCandidate(c);}catch(e){console.warn('ICE candidate failed',e);}}pendingCandidates=[];}
-async function startCall(video){try{if(pc||localStream)return;callKind=video?'video':'voice';updateCallButton('connecting');setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');startTimeout();activeIceServers=await loadIceServers();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!video});if(video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:!!video});await pc.setLocalDescription(offer);sendSignal({type:'offer',sdp:pc.localDescription.sdp,video:!!video});setStatus(video?'VIDEO CALLING...':'VOICE CALLING...');updateCallButton('waiting');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');alert((video?'Camera and microphone':'Microphone')+' permission is required for calling.');}}
-async function acceptIncoming(){const x=incomingOffer;hideIncoming();if(!x)return;try{callKind=x.video?'video':'voice';updateCallButton('connecting');setStatus((x.video?'VIDEO':'VOICE')+' CONNECTING FROM '+(x.from||'UNKNOWN')+'...');startTimeout();activeIceServers=await loadIceServers();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!x.video});if(x.video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(!!x.video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});await pc.setRemoteDescription({type:'offer',sdp:x.sdp});await addPending();const answer=await pc.createAnswer();await pc.setLocalDescription(answer);sendSignal({type:'answer',sdp:pc.localDescription.sdp});setStatus(x.video?'VIDEO CONNECTING...':'VOICE CONNECTING...');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');}}
-function rejectIncoming(){const x=incomingOffer;hideIncoming();if(x)sendSignal({type:'reject',from:x.from});setStatus('ONLINE');}
-async function signal(x){try{if(x.type==='offer'){if(pc||localStream){sendSignal({type:'busy'});return;}showIncoming(x);}else if(x.type==='answer'&&pc){await pc.setRemoteDescription({type:'answer',sdp:x.sdp});await addPending();}else if(x.type==='candidate'){if(pc&&pc.remoteDescription){try{await pc.addIceCandidate(x.candidate);}catch(e){console.warn('ICE add failed',e);}}else{pendingCandidates.push(x.candidate);}}else if(x.type==='hangup'){hangup(false);setStatus('CALL ENDED');}else if(x.type==='reject'){clearCallTimeout();updateCallButton('failed');hangup(false);setStatus('CALL REJECTED BY '+(x.from||'PEER'));}else if(x.type==='busy'){clearCallTimeout();setStatus('PEER BUSY');updateCallButton('failed');hangup(false);}}catch(e){console.error('signaling error',e);clearCallTimeout();setStatus('CALL FAILED');}}
-function hangup(send=true){clearCallTimeout();if(send)sendSignal({type:'hangup'});if(pc){pc.onicecandidate=null;pc.ontrack=null;pc.onconnectionstatechange=null;pc.oniceconnectionstatechange=null;try{pc.close();}catch(e){console.warn('PeerConnection close failed',e);}pc=null;}if(localStream){localStream.getTracks().forEach(track=>{try{track.stop();}catch(e){console.warn('Track stop failed',e);}});localStream=null;}pendingCandidates=[];hideIncoming();callKind='';hideVideoMode();const remote=$('remote');if(remote)remote.srcObject=null;const local=$('local');if(local)local.srcObject=null;$('chat').classList.remove('video-mode');$('voice').textContent='[start a...]';$('video').textContent='[start v...]';if(ws&&ws.readyState===WebSocket.OPEN)setStatus('ONLINE');}
-$('join').onclick=async()=>{name=$('name').value.trim();room=$('room').value.trim();if(!name||!room){alert('username and room_code required');return;}sessionStorage.setItem('twochatName',name);sessionStorage.setItem('twochatRoom',room);$('setup').classList.add('hidden');$('chat').style.display='flex';setStatus('CONNECTING...');await history();const proto=location.protocol==='https:'?'wss':'ws';ws=new WebSocket(proto+'://'+location.host+'/ws?room='+encodeURIComponent(room)+'&name='+encodeURIComponent(name));ws.onopen=()=>{setStatus('ONLINE');if(presenceTimer)clearInterval(presenceTimer);presenceTimer=setInterval(()=>{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'heartbeat'}));},15000);};ws.onclose=()=>{if(presenceTimer)clearInterval(presenceTimer);presenceTimer=null;setStatus('DISCONNECTED');};ws.onerror=()=>{setStatus('CONNECTION ERROR');};
-ws.onmessage = e => {
-  try {
-    const x = JSON.parse(e.data);
-    if (x.type === 'message' || x.type === 'attachment') {
-      add(x);
-    } else if (x.type === 'peer') {
-      if (x.online) {
-        setStatus('PEER ONLINE');
-      } else if (x.lastSeen) {
-        const diff = Date.now() - x.lastSeen;
-        const seconds = Math.floor(diff / 1000);
-        const minutes = Math.floor(seconds / 60);
-        const hours = Math.floor(minutes / 60);
-        const days = Math.floor(hours / 24);
-        let label = '';
-        if (seconds < 60) label = 'Just now';
-        else if (minutes < 60) label = minutes + 'm ago';
-        else if (hours < 24) label = hours + 'h ago';
-        else label = days + 'd ago';
-        setStatus('Last seen ' + label);
-      } else {
-        setStatus('WAITING...');
-      }
-    } else if (x.type === 'message_edit') {
-      const target = document.querySelector('.msg[data-message-id="' + CSS.escape(String(x.id)) + '"]');
-      if (target) {
-        const textEl = target.querySelector('.msg-text');
-        if (textEl) {
-          textEl.textContent = x.text || '';
-          const edited = document.createElement('span');
-          edited.className = 'edited-label';
-          edited.textContent = ' (edited)';
-          textEl.appendChild(edited);
-        }
-      }
-    } else if (x.type === 'message_delete') {
-      const target = document.querySelector('.msg[data-message-id="' + CSS.escape(String(x.id)) + '"]');
-      if (target) target.remove();
-    } else if (['offer', 'answer', 'candidate', 'hangup', 'reject', 'busy'].includes(x.type)) {
-      signal(x);
-    }
-  } catch (err) {
-    console.error('WS message error', err);
+function newCallId(){
+  if(window.crypto&&typeof window.crypto.randomUUID==='function')return window.crypto.randomUUID();
+  return Date.now().toString(36)+'-'+Math.random().toString(36).slice(2);
+}
+function formatLastSeen(value){
+  const time=Number(value);
+  if(!Number.isFinite(time)||time<=0)return 'LAST SEEN UNAVAILABLE';
+  const seconds=Math.max(0,Math.floor((Date.now()-time)/1000));
+  if(seconds<60)return 'LAST SEEN JUST NOW';
+  const minutes=Math.floor(seconds/60);
+  if(minutes<60)return 'LAST SEEN '+minutes+'m AGO';
+  const hours=Math.floor(minutes/60);
+  if(hours<24)return 'LAST SEEN '+hours+'h AGO';
+  const days=Math.floor(hours/24);
+  if(days<30)return 'LAST SEEN '+days+'d AGO';
+  return 'LAST SEEN '+new Date(time).toLocaleString();
+}
+function applyPeerStatus(x){
+  peerStatus=x.online?'PEER ONLINE':x.lastSeen?formatLastSeen(x.lastSeen):'WAITING FOR THE OTHER PERSON';
+  if(!pc&&!incomingOffer)setStatus(peerStatus);
+}
+function sendSignal(message){
+  const payload=JSON.stringify(message);
+  if(ws&&ws.readyState===WebSocket.OPEN){
+    try{ws.send(payload);return;}catch(e){console.warn('Signal send failed; queued',e);}
   }
-};};
+  if(signalQueue.length<128)signalQueue.push(payload);
+  connectSocket();
+}
+function flushSignalQueue(){
+  if(!ws||ws.readyState!==WebSocket.OPEN)return;
+  while(signalQueue.length){
+    try{ws.send(signalQueue[0]);signalQueue.shift();}
+    catch(e){console.warn('Signal queue flush failed',e);break;}
+  }
+}
+function updateCallButton(state){
+  const button=callKind==='video'?$ ('video'):$ ('voice');
+  if(!button)return;
+  const labels={connecting:'[connecting...]',connected:callKind==='video'?'[connected v]':'[connected a]',failed:'[call failed]',waiting:'[calling...]',idle:callKind==='video?'[start v...]':'[start a...]'};
+  button.textContent=labels[state]||labels.idle;
+}
+function showIncoming(x){
+  incomingOffer=x;
+  activeCallId=x.callId||('legacy-'+Date.now());
+  incomingCaller=x.from||'unknown';
+  $('caller').textContent='['+(x.video?'video':'voice')+' call from '+incomingCaller+']';
+  $('incoming').style.display='block';
+  setStatus('INCOMING '+(x.video?'VIDEO':'VOICE')+' CALL');
+}
+function hideIncoming(){
+  incomingOffer=null;
+  incomingCaller='';
+  $('incoming').style.display='none';
+}
+function startTimeout(){
+  clearCallTimeout();
+  callTimeout=setTimeout(()=>{
+    if(pc&&pc.connectionState!=='connected'){
+      hangup(true);
+      setStatus('CALL TIMEOUT · CHECK NETWORK');
+    }
+  },45000);
+}
+function clearCallTimeout(){
+  if(callTimeout){clearTimeout(callTimeout);callTimeout=null;}
+  if(disconnectedTimer){clearTimeout(disconnectedTimer);disconnectedTimer=null;}
+}
+function showVideoMode(){
+  if(callKind==='video'){
+    $('chat').classList.add('video-mode');
+    $('callinfo').textContent='[ VIDEO CALL ]';
+  }
+}
+function hideVideoMode(){
+  $('chat').classList.remove('video-mode');
+  $('remote').srcObject=null;
+  $('local').srcObject=null;
+  $('remoteAudio').srcObject=null;
+}
+function makePeer(video){
+  const connection=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});
+  pc=connection;
+  pendingCandidates=[];
+  connection.onicecandidate=e=>{
+    if(e.candidate&&pc===connection){
+      sendSignal({type:'candidate',callId:activeCallId,candidate:e.candidate.toJSON?e.candidate.toJSON():e.candidate});
+    }
+  };
+  connection.ontrack=e=>{
+    if(pc!==connection)return;
+    const stream=e.streams&&e.streams[0]?e.streams[0]:new MediaStream([e.track]);
+    if(video){
+      $('remote').srcObject=stream;
+      $('remote').play().catch(err=>console.warn('Remote video autoplay blocked',err));
+      showVideoMode();
+    }else{
+      $('remoteAudio').srcObject=stream;
+      $('remoteAudio').play().catch(err=>console.warn('Remote audio autoplay blocked',err));
+    }
+  };
+  connection.onconnectionstatechange=()=>{
+    if(pc!==connection)return;
+    const state=connection.connectionState;
+    if(state==='connected'){
+      clearCallTimeout();
+      setStatus(video?'VIDEO CALL CONNECTED':'VOICE CALL CONNECTED');
+      updateCallButton('connected');
+    }else if(state==='disconnected'){
+      setStatus('CALL INTERRUPTED · RECONNECTING');
+      updateCallButton('connecting');
+      if(disconnectedTimer)clearTimeout(disconnectedTimer);
+      disconnectedTimer=setTimeout(()=>{
+        if(pc===connection&&connection.connectionState==='disconnected'){
+          hangup(false);
+          setStatus('CALL DISCONNECTED');
+        }
+      },12000);
+    }else if(state==='failed'){
+      hangup(false);
+      setStatus('CALL FAILED · NETWORK OR RELAY UNAVAILABLE');
+    }
+  };
+  connection.oniceconnectionstatechange=()=>{
+    if(pc!==connection)return;
+    const state=connection.iceConnectionState;
+    if(state==='connected'||state==='completed'){
+      clearCallTimeout();
+      setStatus(video?'VIDEO CALL CONNECTED':'VOICE CALL CONNECTED');
+      updateCallButton('connected');
+    }else if(state==='failed'){
+      hangup(false);
+      setStatus('ICE FAILED · CHECK TURN CONFIGURATION');
+    }
+  };
+  return connection;
+}
+async function addPending(){
+  if(!pc||!pc.remoteDescription)return;
+  const queued=pendingCandidates;
+  pendingCandidates=[];
+  for(const item of queued){
+    if(item.callId&&activeCallId&&item.callId!==activeCallId)continue;
+    try{await pc.addIceCandidate(item.candidate);}
+    catch(e){console.warn('Queued ICE candidate rejected',e);}
+  }
+}
+async function startCall(video){
+  if(pc||incomingOffer)return;
+  if(!ws||ws.readyState!==WebSocket.OPEN){
+    alert('Chat server is reconnecting. Try calling again when it is connected.');
+    return;
+  }
+  if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+    alert('Calling requires HTTPS and browser media support.');
+    return;
+  }
+  callKind=video?'video':'voice';
+  activeCallId=newCallId();
+  pendingCandidates=[];
+  updateCallButton('connecting');
+  setStatus(video?'STARTING VIDEO CALL...':'STARTING VOICE CALL...');
+  try{
+    activeIceServers=await loadIceServers();
+    localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!video});
+    if(video){
+      $('local').srcObject=localStream;
+      $('local').play().catch(()=>{});
+      showVideoMode();
+    }
+    const connection=makePeer(!!video);
+    localStream.getTracks().forEach(track=>connection.addTrack(track,localStream));
+    const offer=await connection.createOffer();
+    await connection.setLocalDescription(offer);
+    sendSignal({type:'offer',callId:activeCallId,sdp:connection.localDescription.sdp,video:!!video});
+    updateCallButton('waiting');
+    setStatus(video?'VIDEO CALLING...':'VOICE CALLING...');
+    startTimeout();
+  }catch(e){
+    console.error('Could not start call',e);
+    hangup(false);
+    setStatus('CALL FAILED');
+    alert(e.name==='NotAllowedError'?'Camera or microphone permission was denied.':'Unable to access camera or microphone: '+(e.message||e.name));
+  }
+}
+async function acceptIncoming(){
+  const offer=incomingOffer;
+  if(!offer)return;
+  hideIncoming();
+  callKind=offer.video?'video':'voice';
+  activeCallId=offer.callId||activeCallId||('legacy-'+Date.now());
+  updateCallButton('connecting');
+  setStatus('ACCEPTING '+(offer.video?'VIDEO':'VOICE')+' CALL...');
+  try{
+    activeIceServers=await loadIceServers();
+    localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!offer.video});
+    if(offer.video){
+      $('local').srcObject=localStream;
+      $('local').play().catch(()=>{});
+      showVideoMode();
+    }
+    const connection=makePeer(!!offer.video);
+    localStream.getTracks().forEach(track=>connection.addTrack(track,localStream));
+    const remoteDescription=offer.offer&&typeof offer.offer==='object'?offer.offer:{type:'offer',sdp:offer.sdp};
+    await connection.setRemoteDescription(remoteDescription);
+    await addPending();
+    const answer=await connection.createAnswer();
+    await connection.setLocalDescription(answer);
+    sendSignal({type:'answer',callId:activeCallId,sdp:connection.localDescription.sdp});
+    setStatus('CALL ANSWER SENT · CONNECTING...');
+    startTimeout();
+  }catch(e){
+    console.error('Could not accept call',e);
+    sendSignal({type:'reject',callId:activeCallId});
+    hangup(false);
+    setStatus('CALL FAILED');
+    alert(e.name==='NotAllowedError'?'Camera or microphone permission was denied.':'Unable to accept call: '+(e.message||e.name));
+  }
+}
+function rejectIncoming(){
+  const id=activeCallId;
+  hideIncoming();
+  if(id)sendSignal({type:'reject',callId:id});
+  activeCallId=null;
+  setStatus(peerStatus);
+}
+function hangup(send=true){
+  const id=activeCallId;
+  clearCallTimeout();
+  if(send&&id)sendSignal({type:'hangup',callId:id});
+  if(pc){
+    const connection=pc;
+    pc=null;
+    connection.onicecandidate=null;
+    connection.ontrack=null;
+    connection.onconnectionstatechange=null;
+    connection.oniceconnectionstatechange=null;
+    try{connection.close();}catch(e){console.warn('Peer close failed',e);}
+  }
+  if(localStream){
+    localStream.getTracks().forEach(track=>{try{track.stop();}catch(e){console.warn('Track stop failed',e);}});
+    localStream=null;
+  }
+  pendingCandidates=[];
+  hideIncoming();
+  activeCallId=null;
+  callKind='';
+  hideVideoMode();
+  $('remote').srcObject=null;
+  $('local').srcObject=null;
+  $('remoteAudio').srcObject=null;
+  $('chat').classList.remove('video-mode');
+  $('voice').textContent='[start a...]';
+  $('video').textContent='[start v...]';
+  if(ws&&ws.readyState===WebSocket.OPEN)setStatus(peerStatus);
+}
+async function handleSignal(x){
+  try{
+    if(x.type==='offer'){
+      if(pc||incomingOffer){sendSignal({type:'busy',callId:x.callId});return;}
+      showIncoming(x);
+      return;
+    }
+    if(x.type==='candidate'){
+      if(x.callId&&activeCallId&&x.callId!==activeCallId)return;
+      const candidate={callId:x.callId||activeCallId,candidate:x.candidate};
+      if(!pc||!pc.remoteDescription){
+        if(pendingCandidates.length<256)pendingCandidates.push(candidate);
+      }else{
+        try{await pc.addIceCandidate(x.candidate);}
+        catch(e){console.warn('ICE candidate add failed',e);}
+      }
+      return;
+    }
+    if(x.callId&&activeCallId&&x.callId!==activeCallId)return;
+    if(x.type==='answer'&&pc){
+      const answer=x.answer&&typeof x.answer==='object'?x.answer:{type:'answer',sdp:x.sdp};
+      await pc.setRemoteDescription(answer);
+      await addPending();
+      startTimeout();
+    }else if(x.type==='hangup'){
+      hangup(false);
+      setStatus('CALL ENDED');
+    }else if(x.type==='reject'){
+      hangup(false);
+      setStatus('CALL REJECTED BY '+(x.from||'PEER'));
+    }else if(x.type==='busy'){
+      hangup(false);
+      setStatus('PEER BUSY');
+    }
+  }catch(e){
+    console.error('Signaling handler failed',e);
+    hangup(false);
+    setStatus('CALL SIGNALING FAILED');
+  }
+}
+function connectSocket(){
+  if(!room||!name)return;
+  if(ws&&(ws.readyState===WebSocket.OPEN||ws.readyState===WebSocket.CONNECTING))return;
+  clearTimeout(reconnectTimer);
+  let socket;
+  try{
+    const proto=location.protocol==='https:'?'wss':'ws';
+    socket=new WebSocket(proto+'://'+location.host+'/ws?room='+encodeURIComponent(room)+'&name='+encodeURIComponent(name));
+  }catch(e){
+    setStatus('CONNECTION ERROR · RETRYING');
+    scheduleReconnect();
+    return;
+  }
+  ws=socket;
+  socket.onopen=()=>{
+    if(ws!==socket)return;
+    reconnectAttempt=0;
+    if(presenceTimer)clearInterval(presenceTimer);
+    socket.send(JSON.stringify({type:'heartbeat'}));
+    presenceTimer=setInterval(()=>{
+      if(ws===socket&&socket.readyState===WebSocket.OPEN){
+        try{socket.send(JSON.stringify({type:'heartbeat'});}catch(e){console.warn('Heartbeat failed',e);}
+      }
+    },15000);
+    flushSignalQueue();
+    if(!pc&&!incomingOffer)setStatus('CONNECTED · '+peerStatus);
+  };
+  socket.onclose=()=>{
+    if(ws!==socket)return;
+    if(presenceTimer)clearInterval(presenceTimer);
+    presenceTimer=null;
+    setStatus(pc?'CALL ACTIVE · SIGNALING RECONNECTING':'DISCONNECTED · RECONNECTING');
+    scheduleReconnect();
+  };
+  socket.onerror=()=>{
+    if(ws===socket&&!pc)setStatus('CONNECTION ERROR · RETRYING');
+  };
+  socket.onmessage=e=>{
+    if(ws!==socket)return;
+    try{
+      const x=JSON.parse(e.data);
+      if(x.type==='message'||x.type==='attachment'){add(x);}
+      else if(x.type==='peer'){applyPeerStatus(x);}
+      else if(x.type==='message_edit'){
+        const target=document.querySelector('.msg[data-message-id="'+CSS.escape(String(x.id))+'"]');
+        if(target){
+          const textEl=target.querySelector('.msg-text');
+          if(textEl){
+            textEl.textContent=x.text||'';
+            const edited=document.createElement('span');
+            edited.className='edited-label';
+            edited.textContent=' (edited)';
+            textEl.appendChild(edited);
+          }
+        }
+      }else if(x.type==='message_delete'){
+        const target=document.querySelector('.msg[data-message-id="'+CSS.escape(String(x.id))+'"]');
+        if(target)target.remove();
+      }else if(['offer','answer','candidate','hangup','reject','busy'].includes(x.type)){
+        handleSignal(x);
+      }
+    }catch(error){console.error('WebSocket message error',error);}
+  };
+}
+function scheduleReconnect(){
+  clearTimeout(reconnectTimer);
+  const delay=Math.min(15000,1000*Math.pow(2,reconnectAttempt++));
+  reconnectTimer=setTimeout(()=>{ws=null;connectSocket();},delay);
+}
+$('join').onclick=async()=>{
+  name=$('name').value.trim();
+  room=$('room').value.trim();
+  if(!name||!room){alert('username and room_code required');return;}
+  sessionStorage.setItem('twochatName',name);
+  sessionStorage.setItem('twochatRoom',room);
+  $('join').disabled=true;
+  setStatus('CONNECTING...');
+  try{
+    await history();
+    $('setup').classList.add('hidden');
+    $('chat').style.display='flex';
+    connectSocket();
+  }catch(e){
+    console.error('Join failed',e);
+    $('join').disabled=false;
+    setStatus('JOIN FAILED');
+    alert(e.message||'Could not join room');
+  }
+};
+
 $('send').onclick=send;$('attach').onclick=()=>{$('file').click();};$('file').onchange=uploadFile;$('voice').onclick=()=>{startCall(false);};$('video').onclick=()=>{startCall(true);};$('leave').onclick=()=>{hangup();};$('leave2').onclick=()=>{hangup();};$('accept').onclick=acceptIncoming;$('reject').onclick=rejectIncoming;
 const sn=sessionStorage.getItem('twochatName');const sr=sessionStorage.getItem('twochatRoom');if(sn)$('name').value=sn;if(sr)$('room').value=sr;
+window.addEventListener('beforeunload',()=>{if(presenceTimer)clearInterval(presenceTimer);clearTimeout(reconnectTimer);clearCallTimeout();});
 async function editMessage(m){
   if(!m || m.sender!==name) return;
   const current=m.text||'';
