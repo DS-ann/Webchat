@@ -37,11 +37,16 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
 .attachment .msg-time{color:#6f9f6f}
 .msg:before{content:"> ";color:#397039}
 .reply-preview{color:#6fa8dc;border-left:3px solid #4a90e2;padding:4px 7px;margin:2px 0 5px;opacity:.85;text-align:left;overflow:hidden;}
-.message-actions{display:none;gap:6px;margin-top:6px;padding-top:5px;border-top:1px solid #174117;}
+.message-actions{display:none;gap:6px;margin-top:6px;padding-top:5px;border-top:1px solid #174117;flex-wrap:wrap;}
 .msg.show-actions .message-actions{display:flex;}
 .message-actions button{padding:4px 8px;background:#0c2d0c;border:1px solid #397a39;color:#9fff9f;font:inherit;font-size:11px;font-weight:bold;cursor:pointer;}
+.message-actions .reply-message{border-color:#7a9f55;color:#c8ff9f;}
 .message-actions .edit-message{border-color:#5b8db8;color:#a9d5ff;}
 .message-actions .delete-message{border-color:#a95555;color:#ff9f9f;}
+@media (hover:hover) and (pointer:fine){
+  .msg:hover .message-actions{display:flex;}
+  .message-actions{align-items:center;}
+}
 .edited-label{color:#6f9f6f;font-size:10px;}
 .reply-who{display:block;font-weight:700;font-size:.85em;}
 .reply-text{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-size:.82em;}
@@ -153,17 +158,33 @@ function add(m){
   }else{
     d.innerHTML='<span class="who">'+esc(m.sender)+'</span>'+replyHtml+'<span class="msg-text">'+esc(m.text||'')+'</span><span class="msg-time">'+esc(time)+'</span>';
   }
-  if(m.sender===name&&m.type!=='attachment'){
+  const desktopPointer=window.matchMedia&&window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  if(desktopPointer||(m.sender===name&&m.type!=='attachment')){
     const actions=document.createElement('div');
     actions.className='message-actions';
-    actions.innerHTML='<button type="button" class="edit-message">[EDIT]</button><button type="button" class="delete-message">[DLT]</button>';
+    const replyBtn=document.createElement('button');
+    replyBtn.type='button';
+    replyBtn.className='reply-message';
+    replyBtn.textContent='[REPLY]';
+    replyBtn.addEventListener('click',e=>{e.stopPropagation();showReplyBar(m);d.classList.remove('show-actions');});
+    actions.appendChild(replyBtn);
+    if(m.sender===name&&m.type!=='attachment'){
+      const editBtn=document.createElement('button');
+      editBtn.type='button';
+      editBtn.className='edit-message';
+      editBtn.textContent='[EDIT]';
+      editBtn.addEventListener('click',e=>{e.stopPropagation();editMessage(m);});
+      const deleteBtn=document.createElement('button');
+      deleteBtn.type='button';
+      deleteBtn.className='delete-message';
+      deleteBtn.textContent='[DLT]';
+      deleteBtn.addEventListener('click',e=>{e.stopPropagation();deleteMessage(m);});
+      actions.appendChild(editBtn);
+      actions.appendChild(deleteBtn);
+      setupLongPress(d,()=>{d.classList.toggle('show-actions');});
+    }
     d.appendChild(actions);
-    const editBtn=actions.querySelector('.edit-message');
-    const deleteBtn=actions.querySelector('.delete-message');
-    editBtn.addEventListener('click',e=>{e.stopPropagation();editMessage(m);});
-    deleteBtn.addEventListener('click',e=>{e.stopPropagation();deleteMessage(m);});
-    setupLongPress(d,()=>{d.classList.toggle('show-actions');});
-    d.addEventListener('contextmenu',e=>{e.preventDefault();d.classList.toggle('show-actions');});
+    d.addEventListener('contextmenu',e=>{e.preventDefault();d.classList.add('show-actions');});
   }
   let startX=0,startY=0,swiping=false;
   d.addEventListener('touchstart',e=>{if(e.touches.length!==1)return;startX=e.touches[0].clientX;startY=e.touches[0].clientY;swiping=false;d.classList.remove('reply-ready');},{passive:true});
@@ -563,6 +584,13 @@ $('join').onclick=async()=>{
   }
 };
 
+$('text').addEventListener('keydown',e=>{
+  const desktopKeyboard=window.matchMedia&&window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+  if(desktopKeyboard&&e.key==='Enter'&&!e.shiftKey&&!e.isComposing){
+    e.preventDefault();
+    send();
+  }
+});
 $('send').onclick=send;$('attach').onclick=()=>{$('file').click();};$('file').onchange=uploadFile;$('voice').onclick=()=>{startCall(false);};$('video').onclick=()=>{startCall(true);};$('leave').onclick=()=>{hangup();};$('leave2').onclick=()=>{hangup();};$('accept').onclick=acceptIncoming;$('reject').onclick=rejectIncoming;
 const sn=sessionStorage.getItem('twochatName');const sr=sessionStorage.getItem('twochatRoom');if(sn)$('name').value=sn;if(sr)$('room').value=sr;
 window.addEventListener('beforeunload',()=>{if(presenceTimer)clearInterval(presenceTimer);clearTimeout(reconnectTimer);clearCallTimeout();});
