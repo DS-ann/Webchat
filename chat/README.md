@@ -34,3 +34,26 @@ Do not put Cloudflare API tokens or secrets in `chat/` or any browser JavaScript
 ## Privacy note
 
 The room code is the access credential in this first version. Anyone who knows it can join that room, so use a long random code and don't publish it.
+
+
+## Calling reliability and presence
+
+Voice and video calls use WebRTC with trickle ICE. The browser queues ICE candidates until the remote description is ready, and the signaling client reconnects if its WebSocket drops. Room presence is maintained by the Durable Object, with last-seen timestamps stored in Durable Object storage.
+
+### Optional TURN relay (recommended)
+
+STUN is enough on some networks, but it cannot relay media through every NAT or firewall. To enable Cloudflare TURN fallback:
+
+1. Create a TURN key in Cloudflare Realtime and create an API token with permission to generate TURN credentials.
+2. From `cloudflare/`, set the two values as Worker secrets:
+
+   ```bash
+   npx wrangler secret put TURN_KEY_ID
+   npx wrangler secret put TURN_API_TOKEN
+   ```
+
+3. Deploy the Worker again.
+
+The Worker exposes `GET /api/ice-servers`, generates short-lived ICE credentials server-side, and returns them to the calling browsers. The long-lived token is never included in the static frontend. When TURN secrets are not configured, the endpoint falls back to public STUN servers; calls may still fail on restrictive networks.
+
+Cloudflare's [TURN credential guide](https://developers.cloudflare.com/realtime/turn/generate-credentials/) describes key creation and the short-lived credential API.
