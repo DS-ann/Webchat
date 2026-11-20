@@ -139,6 +139,9 @@ const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const FALLBACK_ICE_SERVERS=[{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
 let activeIceServers=FALLBACK_ICE_SERVERS;
+// Always connect signaling to the production Worker, even when the UI is embedded
+// or opened through a custom/legacy hostname.
+const CHAT_SERVER_ORIGIN='https://asus.redmipad1.workers.dev';
 async function loadIceServers(){try{const r=await fetch('/api/ice-servers',{cache:'no-store'});if(r.ok){const data=await r.json();if(Array.isArray(data.iceServers)&&data.iceServers.length)return data.iceServers;}}catch(e){console.warn('TURN credentials unavailable; using STUN fallback',e);}return FALLBACK_ICE_SERVERS;}
 function setStatus(x){$('status').textContent='[ '+x+' ]';}
 function showReplyBar(m){replyTo=m;const preview=(m.text||m.filename||'attachment').replace(/\s+/g,' ').slice(0,80);$('replyBarText').textContent='Replying to '+m.sender+': '+preview;$('replyBar').classList.remove('hidden');$('text').placeholder='Replying to '+m.sender+': '+preview;$('text').focus();}
@@ -507,8 +510,13 @@ function connectSocket(){
   clearTimeout(reconnectTimer);
   let socket;
   try{
-    const proto=location.protocol==='https:'?'wss':'ws';
-    socket=new WebSocket(proto+'://'+location.host+'/ws?room='+encodeURIComponent(room)+'&name='+encodeURIComponent(name));
+    const socketBase=new URL(CHAT_SERVER_ORIGIN);
+    socketBase.protocol='wss:';
+    socketBase.pathname='/ws';
+    socketBase.search='';
+    socketBase.searchParams.set('room',room);
+    socketBase.searchParams.set('name',name);
+    socket=new WebSocket(socketBase.toString());
   }catch(e){
     setStatus('CONNECTION ERROR · RETRYING');
     scheduleReconnect();
@@ -593,7 +601,9 @@ async function waitForSocketConnection(timeout=12000){
     if(socketClosed&&!reconnectTimer)connectSocket();
     await new Promise(resolve=>setTimeout(resolve,100));
   }
-  throw new Error('WebSocket connection timed out. Last result: '+socketFailure);
+  const readyState=ws?['CONNECTING','OPEN','CLOSING','CLOSED'][ws.readyState]||String(ws.readyState):'NO_SOCKET';
+  const endpoint=ws&&ws.url?ws.url:CHAT_SERVER_ORIGIN+'/ws';
+  throw new Error('WebSocket connection timed out. Last result: '+(socketFailure||'no close/error event received')+'; state='+readyState+'; endpoint='+endpoint);
 }
 $('join').onclick=async()=>{
   name=$('name').value.trim();
@@ -725,7 +735,7 @@ export default{
   async fetch(request,env){
     const url=new URL(request.url);
     if(request.method==='OPTIONS') return new Response(null,{headers:CORS});
-    if(url.pathname==='/'||url.pathname==='/index.html') return new Response(HTML,{headers:{'content-type':'text/html;charset=UTF-8'}});
+    if(url.pathname==='/'||url.pathname==='/index.html') return new Response(HTML,{headers:{'content-type':'text/html;charset=UTF-8','cache-control':'no-store, no-cache, must-revalidate'}});
     if(url.pathname==='/ws'){
       if((request.headers.get('Upgrade')||'').toLowerCase()!=='websocket') return new Response('WebSocket required',{status:426});
       const room=clean(url.searchParams.get('room')), name=clean(url.searchParams.get('name'));
