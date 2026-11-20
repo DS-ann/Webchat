@@ -242,8 +242,7 @@ async function createPeer(video) {
   const iceServers = await loadIceServers();
   const connection = new RTCPeerConnection({
     iceServers,
-    iceCandidatePoolSize: 4,
-    bundlePolicy: 'max-bundle'
+    iceCandidatePoolSize: 4
   });
   pc = connection;
   let hasConnected = false;
