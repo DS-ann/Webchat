@@ -285,7 +285,7 @@ function hideVideoMode(){
   $('remoteAudio').srcObject=null;
 }
 function makePeer(video){
-  const connection=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});
+  const connection=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4});
   pc=connection;
   let hasConnected=false;
   const armDisconnectGrace=()=>{
