@@ -162,12 +162,14 @@ function add(m){
   if(desktopPointer||(m.sender===name&&m.type!=='attachment')){
     const actions=document.createElement('div');
     actions.className='message-actions';
-    const replyBtn=document.createElement('button');
-    replyBtn.type='button';
-    replyBtn.className='reply-message';
-    replyBtn.textContent='[REPLY]';
-    replyBtn.addEventListener('click',e=>{e.stopPropagation();showReplyBar(m);d.classList.remove('show-actions');});
-    actions.appendChild(replyBtn);
+    if(desktopPointer){
+      const replyBtn=document.createElement('button');
+      replyBtn.type='button';
+      replyBtn.className='reply-message';
+      replyBtn.textContent='[REPLY]';
+      replyBtn.addEventListener('click',e=>{e.stopPropagation();showReplyBar(m);d.classList.remove('show-actions');});
+      actions.appendChild(replyBtn);
+    }
     if(m.sender===name&&m.type!=='attachment'){
       const editBtn=document.createElement('button');
       editBtn.type='button';
