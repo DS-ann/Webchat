@@ -106,11 +106,11 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
     </div>
     <div id="callview" class="callview">
       <div id="callinfo" class="callinfo"></div>
-      <audio id="remoteAudio" autoplay></audio>
       <video id="remote" class="remote" autoplay playsinline></video>
       <video id="local" class="local" autoplay muted playsinline></video>
       <div class="callcontrols"><button id="leave2" class="danger">[end a.v...]</button></div>
     </div>
+    <audio id="remoteAudio" autoplay></audio>
     <div class="tools">
       <button id="voice" class="call">[start a...]</button>
       <button id="video" class="video">[start v...]</button>
@@ -494,7 +494,7 @@ function connectSocket(){
     socket.send(JSON.stringify({type:'heartbeat'}));
     presenceTimer=setInterval(()=>{
       if(ws===socket&&socket.readyState===WebSocket.OPEN){
-        try{socket.send(JSON.stringify({type:'heartbeat'});}catch(e){console.warn('Heartbeat failed',e);}
+        try{socket.send(JSON.stringify({type:'heartbeat'}));}catch(e){console.warn('Heartbeat failed',e);}
       }
     },15000);
     flushSignalQueue();
