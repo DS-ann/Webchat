@@ -246,6 +246,23 @@ async function createPeer(video) {
     bundlePolicy: 'max-bundle'
   });
   pc = connection;
+  let hasConnected = false;
+  const clearDisconnectGrace = () => {
+    clearTimeout(disconnectedTimer);
+    disconnectedTimer = null;
+  };
+  const armDisconnectGrace = () => {
+    // Do not terminate an initial ICE negotiation on a transient state.
+    if (!hasConnected || disconnectedTimer) return;
+    disconnectedTimer = setTimeout(() => {
+      if (pc === connection &&
+          connection.connectionState === 'disconnected' &&
+          connection.iceConnectionState === 'disconnected') {
+        closeCall(false);
+        setStatus('Call disconnected');
+      }
+    }, 20000);
+  };
 
   connection.onicecandidate = event => {
     if (event.candidate && pc === connection) {
@@ -256,7 +273,13 @@ async function createPeer(video) {
       });
     }
   };
-
+  connection.onicecandidateerror = event => {
+    console.warn('ICE candidate server error', {
+      url: event.url,
+      code: event.errorCode,
+      text: event.errorText
+    });
+  };
   connection.ontrack = event => {
     if (pc !== connection) return;
     const stream = event.streams && event.streams[0]
@@ -270,39 +293,46 @@ async function createPeer(video) {
       $('remoteAudio').play().catch(() => {});
     }
   };
-
   connection.onconnectionstatechange = () => {
     if (pc !== connection) return;
     const state = connection.connectionState;
     if (state === 'connected') {
+      hasConnected = true;
       clearCallTimer();
       setStatus(video ? 'Video call connected' : 'Voice call connected');
     } else if (state === 'disconnected') {
-      setStatus('Call interrupted · attempting to reconnect');
-      clearTimeout(disconnectedTimer);
-      disconnectedTimer = setTimeout(() => {
-        if (pc === connection && connection.connectionState === 'disconnected') {
-          closeCall(false);
-          setStatus('Call disconnected');
-        }
-      }, 12000);
+      setStatus(hasConnected
+        ? 'Call interrupted · attempting to reconnect'
+        : 'Call negotiating · checking connection');
+      armDisconnectGrace();
     } else if (state === 'failed') {
       closeCall(false);
-      setStatus('Call failed · network or relay unavailable');
+      setStatus('Call failed · no usable network path');
     }
   };
-
   connection.oniceconnectionstatechange = () => {
     if (pc !== connection) return;
-    if (connection.iceConnectionState === 'failed') {
+    const state = connection.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      hasConnected = true;
+      clearDisconnectGrace();
+      clearCallTimer();
+      setStatus(video ? 'Video call connected' : 'Voice call connected');
+    } else if (state === 'checking') {
+      clearDisconnectGrace();
+      if (!hasConnected) setStatus('Call negotiating · checking connection');
+    } else if (state === 'disconnected') {
+      setStatus(hasConnected
+        ? 'Call interrupted · attempting to reconnect'
+        : 'Call negotiating · checking connection');
+      armDisconnectGrace();
+    } else if (state === 'failed') {
       closeCall(false);
-      setStatus('ICE connection failed · check TURN configuration');
+      setStatus('ICE failed · no usable connection path');
     }
   };
-
   return connection;
 }
-
 async function flushPendingCandidates() {
   if (!pc || !pc.remoteDescription) return;
   const queued = pendingCandidates;
