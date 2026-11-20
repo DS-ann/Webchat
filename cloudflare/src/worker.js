@@ -214,9 +214,9 @@ function flushSignalQueue(){
   }
 }
 function updateCallButton(state){
-  const button=callKind==='video'?$ ('video'):$ ('voice');
+  const button=callKind==='video' ? $('video') : $('voice');
   if(!button)return;
-  const labels={connecting:'[connecting...]',connected:callKind==='video'?'[connected v]':'[connected a]',failed:'[call failed]',waiting:'[calling...]',idle:callKind==='video?'[start v...]':'[start a...]'};
+  const labels={connecting:'[connecting...]',connected:callKind==='video'?'[connected v]':'[connected a]',failed:'[call failed]',waiting:'[calling...]',idle:callKind==='video'?[start v...]':'[start a...]'};
   button.textContent=labels[state]||labels.idle;
 }
 function showIncoming(x){
