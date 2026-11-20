@@ -11,7 +11,7 @@ const HTML = `
 <html>
 <head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CHAT // Terminal</title>
+<title>asus//</title>
 <style>
 *{box-sizing:border-box;}
 html,body{margin:0;height:100%;background:#050805;color:#c8ffc8;font-family:"Courier New",monospace;}
