@@ -222,6 +222,7 @@ function updateCallButton(state){
 function showIncoming(x){
   incomingOffer=x;
   activeCallId=x.callId||('legacy-'+Date.now());
+  if(x.callId)pendingCandidates=pendingCandidates.filter(item=>!item.callId||item.callId===x.callId);
   incomingCaller=x.from||'unknown';
   $('caller').textContent='['+(x.video?'video':'voice')+' call from '+incomingCaller+']';
   $('incoming').style.display='block';
@@ -260,7 +261,6 @@ function hideVideoMode(){
 function makePeer(video){
   const connection=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});
   pc=connection;
-  pendingCandidates=[];
   connection.onicecandidate=e=>{
     if(e.candidate&&pc===connection){
       sendSignal({type:'candidate',callId:activeCallId,candidate:e.candidate.toJSON?e.candidate.toJSON():e.candidate});
