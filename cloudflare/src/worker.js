@@ -287,10 +287,28 @@ function hideVideoMode(){
 function makePeer(video){
   const connection=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});
   pc=connection;
+  let hasConnected=false;
+  const armDisconnectGrace=()=>{
+    // A pre-connect ICE "disconnected" state is still part of negotiation.
+    // Only apply a recovery deadline after this peer connection worked once.
+    if(!hasConnected||disconnectedTimer)return;
+    disconnectedTimer=setTimeout(()=>{
+      if(pc===connection&&connection.connectionState==='disconnected'&&connection.iceConnectionState==='disconnected'){
+        hangup(false);
+        setStatus('CALL DISCONNECTED');
+      }
+    },20000);
+  };
+  const clearDisconnectGrace=()=>{
+    if(disconnectedTimer){clearTimeout(disconnectedTimer);disconnectedTimer=null;}
+  };
   connection.onicecandidate=e=>{
     if(e.candidate&&pc===connection){
       sendSignal({type:'candidate',callId:activeCallId,candidate:e.candidate.toJSON?e.candidate.toJSON():e.candidate});
     }
+  };
+  connection.onicecandidateerror=e=>{
+    console.warn('ICE candidate server error',{url:e.url,code:e.errorCode,text:e.errorText});
   };
   connection.ontrack=e=>{
     if(pc!==connection)return;
@@ -308,34 +326,37 @@ function makePeer(video){
     if(pc!==connection)return;
     const state=connection.connectionState;
     if(state==='connected'){
+      hasConnected=true;
       clearCallTimeout();
       setStatus(video?'VIDEO CALL CONNECTED':'VOICE CALL CONNECTED');
       updateCallButton('connected');
     }else if(state==='disconnected'){
-      setStatus('CALL INTERRUPTED · RECONNECTING');
+      setStatus(hasConnected?'CALL INTERRUPTED · RECONNECTING':'CALL NEGOTIATING · CHECKING CONNECTION');
       updateCallButton('connecting');
-      if(disconnectedTimer)clearTimeout(disconnectedTimer);
-      disconnectedTimer=setTimeout(()=>{
-        if(pc===connection&&connection.connectionState==='disconnected'){
-          hangup(false);
-          setStatus('CALL DISCONNECTED');
-        }
-      },12000);
+      armDisconnectGrace();
     }else if(state==='failed'){
       hangup(false);
-      setStatus('CALL FAILED · NETWORK OR RELAY UNAVAILABLE');
+      setStatus('CALL FAILED · NETWORK PATH UNAVAILABLE');
     }
   };
   connection.oniceconnectionstatechange=()=>{
     if(pc!==connection)return;
     const state=connection.iceConnectionState;
     if(state==='connected'||state==='completed'){
+      hasConnected=true;
+      clearDisconnectGrace();
       clearCallTimeout();
       setStatus(video?'VIDEO CALL CONNECTED':'VOICE CALL CONNECTED');
       updateCallButton('connected');
+    }else if(state==='checking'){
+      clearDisconnectGrace();
+      if(!hasConnected)setStatus('CALL NEGOTIATING · CHECKING CONNECTION');
+    }else if(state==='disconnected'){
+      setStatus(hasConnected?'CALL INTERRUPTED · RECONNECTING':'CALL NEGOTIATING · CHECKING CONNECTION');
+      armDisconnectGrace();
     }else if(state==='failed'){
       hangup(false);
-      setStatus('ICE FAILED · CHECK TURN CONFIGURATION');
+      setStatus('ICE FAILED · NO USABLE CONNECTION PATH');
     }
   };
   return connection;
