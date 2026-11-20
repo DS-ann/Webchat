@@ -96,11 +96,11 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
 <main>
   <div class="top"><div class="brand">$$$</div><div id="status" class="status">[ OFFLINE ]</div></div>
   <section id="setup" class="setup">
-    <h2>hello there</h2><p>Enter your identity and private room code.</p>
+    <h2>hello there</h2>
     <input id="name" maxlength="40" placeholder="username">
     <input id="room" maxlength="64" placeholder="room_code">
-    <button id="join">[ EXECUTE JOIN ]</button>
-    <div class="hint">Use the same room code on both devices.</div>
+    <button id="join">[ EXECUTE ]</button>
+
   </section>
   <section id="chat" class="chat">
     <div class="messages" id="messages"></div>
