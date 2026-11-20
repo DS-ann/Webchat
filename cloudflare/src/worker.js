@@ -349,8 +349,13 @@ async function addPending(){
 }
 async function startCall(video){
   if(pc||incomingOffer)return;
-  if(!ws||ws.readyState!==WebSocket.OPEN){
-    alert('Chat server is reconnecting. Try calling again when it is connected.');
+  try{
+    await waitForSocketConnection(12000);
+  }catch(error){
+    console.warn('Chat signaling socket is not ready',error);
+    updateCallButton('idle');
+    setStatus('CHAT SERVER DISCONNECTED');
+    alert('Chat server is still disconnected. Check your connection and try again.');
     return;
   }
   if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
@@ -510,8 +515,15 @@ function connectSocket(){
     return;
   }
   ws=socket;
+  const handshakeTimeout=setTimeout(()=>{
+    if(ws===socket&&socket.readyState===WebSocket.CONNECTING){
+      console.warn('WebSocket handshake timed out');
+      try{socket.close();}catch(e){console.warn('Could not close timed-out socket',e);}
+    }
+  },10000);
   socket.onopen=()=>{
     if(ws!==socket)return;
+    clearTimeout(handshakeTimeout);
     reconnectAttempt=0;
     if(presenceTimer)clearInterval(presenceTimer);
     socket.send(JSON.stringify({type:'heartbeat'}));
@@ -524,6 +536,7 @@ function connectSocket(){
     if(!pc&&!incomingOffer)setStatus('CONNECTED · '+peerStatus);
   };
   socket.onclose=()=>{
+    clearTimeout(handshakeTimeout);
     if(ws!==socket)return;
     if(presenceTimer)clearInterval(presenceTimer);
     presenceTimer=null;
@@ -531,7 +544,9 @@ function connectSocket(){
     scheduleReconnect();
   };
   socket.onerror=()=>{
-    if(ws===socket&&!pc)setStatus('CONNECTION ERROR · RETRYING');
+    if(ws!==socket)return;
+    if(!pc)setStatus('CONNECTION ERROR · RETRYING');
+    try{socket.close();}catch(e){console.warn('WebSocket close after error failed',e);}
   };
   socket.onmessage=e=>{
     if(ws!==socket)return;
@@ -563,7 +578,18 @@ function connectSocket(){
 function scheduleReconnect(){
   clearTimeout(reconnectTimer);
   const delay=Math.min(15000,1000*Math.pow(2,reconnectAttempt++));
-  reconnectTimer=setTimeout(()=>{ws=null;connectSocket();},delay);
+  reconnectTimer=setTimeout(()=>{reconnectTimer=null;ws=null;connectSocket();},delay);
+}
+async function waitForSocketConnection(timeout=12000){
+  const deadline=Date.now()+timeout;
+  setStatus('CONNECTING TO CHAT SERVER...');
+  while(Date.now()<deadline){
+    if(ws&&ws.readyState===WebSocket.OPEN)return ws;
+    const socketClosed=!ws||ws.readyState===WebSocket.CLOSED||ws.readyState===WebSocket.CLOSING;
+    if(socketClosed&&!reconnectTimer)connectSocket();
+    await new Promise(resolve=>setTimeout(resolve,100));
+  }
+  throw new Error('WebSocket connection timed out');
 }
 $('join').onclick=async()=>{
   name=$('name').value.trim();
@@ -700,8 +726,10 @@ export default{
       if(request.headers.get('Upgrade')!=='websocket') return new Response('WebSocket required',{status:426});
       const room=clean(url.searchParams.get('room')), name=clean(url.searchParams.get('name'));
       if(!room||!name) return new Response('room and name required',{status:400,headers:CORS});
+      if(request.method!=='GET') return new Response('WebSocket GET required',{status:405,headers:CORS});
       const id=env.ROOMS.idFromName(room);
-      return env.ROOMS.get(id).fetch(new Request('https://room/ws?'+new URLSearchParams({room,name}), request));
+      // Preserve the original Upgrade request when proxying into the Durable Object.
+      return env.ROOMS.get(id).fetch(request);
     }
     if(url.pathname==='/api/ice-servers' && request.method==='GET'){
       const fallback=[{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
