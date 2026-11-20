@@ -128,10 +128,12 @@ main{width:min(900px,100%);height:100%;display:flex;flex-direction:column;backgr
   </section>
 </main>
 <script>
-let name='', room='', ws=null, pc=null, localStream=null, pendingCandidates=[], callKind='', callTimeout=null, incomingOffer=null, incomingCaller='', replyTo=null;
+let name='', room='', ws=null, pc=null, localStream=null, pendingCandidates=[], callKind='', callTimeout=null, incomingOffer=null, incomingCaller='', replyTo=null, presenceTimer=null;
 const $=id=>document.getElementById(id);
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const RTC_CONFIG={iceServers:[{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}],iceCandidatePoolSize:4};
+const FALLBACK_ICE_SERVERS=[{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
+let activeIceServers=FALLBACK_ICE_SERVERS;
+async function loadIceServers(){try{const r=await fetch('/api/ice-servers',{cache:'no-store'});if(r.ok){const data=await r.json();if(Array.isArray(data.iceServers)&&data.iceServers.length)return data.iceServers;}}catch(e){console.warn('TURN credentials unavailable; using STUN fallback',e);}return FALLBACK_ICE_SERVERS;}
 function setStatus(x){$('status').textContent='[ '+x+' ]';}
 function showReplyBar(m){replyTo=m;const preview=(m.text||m.filename||'attachment').replace(/\s+/g,' ').slice(0,80);$('replyBarText').textContent='Replying to '+m.sender+': '+preview;$('replyBar').classList.remove('hidden');$('text').placeholder='Replying to '+m.sender+': '+preview;$('text').focus();}
 function cancelReply(){replyTo=null;$('replyBarText').textContent='';$('replyBar').classList.add('hidden');$('text').placeholder='type_message...';$('text').focus();}
@@ -182,14 +184,14 @@ function startTimeout(){clearTimeout(callTimeout);callTimeout=setTimeout(()=>{if
 function clearCallTimeout(){if(callTimeout){clearTimeout(callTimeout);callTimeout=null;}}
 function showVideoMode(){if(callKind==='video'){$('chat').classList.add('video-mode');$('callinfo').textContent='[ VIDEO CALL ]';}}
 function hideVideoMode(){$('chat').classList.remove('video-mode');$('remote').srcObject=null;$('local').srcObject=null;}
-function makePeer(video){pc=new RTCPeerConnection(RTC_CONFIG);pendingCandidates=[];pc.onicecandidate=e=>{if(e.candidate){sendSignal({type:'candidate',candidate:e.candidate});}};pc.ontrack=e=>{$('remote').srcObject=e.streams[0];$('remote').play().catch(()=>{});if(video)showVideoMode();setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');};pc.onconnectionstatechange=()=>{const s=pc?.connectionState;if(s==='connecting'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='disconnected'){setStatus('CALL DISCONNECTED');updateCallButton('failed');}else if(s==='failed'){setStatus('CALL FAILED');updateCallButton('failed');}else if(s==='closed'){setStatus('ONLINE');}};pc.oniceconnectionstatechange=()=>{const s=pc?.iceConnectionState;if(s==='checking'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'||s==='completed'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='failed'){setStatus('ICE FAILED');updateCallButton('failed');}};return pc;}
+function makePeer(video){pc=new RTCPeerConnection({iceServers:activeIceServers,iceCandidatePoolSize:4,bundlePolicy:'max-bundle'});pendingCandidates=[];pc.onicecandidate=e=>{if(e.candidate){sendSignal({type:'candidate',candidate:e.candidate});}};pc.ontrack=e=>{$('remote').srcObject=e.streams[0];$('remote').play().catch(()=>{});if(video)showVideoMode();setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');};pc.onconnectionstatechange=()=>{const s=pc?.connectionState;if(s==='connecting'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='disconnected'){setStatus('CALL DISCONNECTED');updateCallButton('failed');}else if(s==='failed'){setStatus('CALL FAILED');updateCallButton('failed');}else if(s==='closed'){setStatus('ONLINE');}};pc.oniceconnectionstatechange=()=>{const s=pc?.iceConnectionState;if(s==='checking'){setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');updateCallButton('connecting');}else if(s==='connected'||s==='completed'){clearCallTimeout();setStatus(video?'VIDEO CONNECTED':'VOICE CONNECTED');updateCallButton('connected');}else if(s==='failed'){setStatus('ICE FAILED');updateCallButton('failed');}};return pc;}
 async function addPending(){if(!pc||!pc.remoteDescription)return;for(const c of pendingCandidates){try{await pc.addIceCandidate(c);}catch(e){console.warn('ICE candidate failed',e);}}pendingCandidates=[];}
-async function startCall(video){try{if(pc||localStream)return;callKind=video?'video':'voice';updateCallButton('connecting');setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');startTimeout();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!video});if(video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:!!video});await pc.setLocalDescription(offer);sendSignal({type:'offer',sdp:pc.localDescription.sdp,video:!!video});setStatus(video?'VIDEO CALLING...':'VOICE CALLING...');updateCallButton('waiting');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');alert((video?'Camera and microphone':'Microphone')+' permission is required for calling.');}}
-async function acceptIncoming(){const x=incomingOffer;hideIncoming();if(!x)return;try{callKind=x.video?'video':'voice';updateCallButton('connecting');setStatus((x.video?'VIDEO':'VOICE')+' CONNECTING FROM '+(x.from||'UNKNOWN')+'...');startTimeout();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!x.video});if(x.video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(!!x.video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});await pc.setRemoteDescription({type:'offer',sdp:x.sdp});await addPending();const answer=await pc.createAnswer();await pc.setLocalDescription(answer);sendSignal({type:'answer',sdp:pc.localDescription.sdp});setStatus(x.video?'VIDEO CONNECTING...':'VOICE CONNECTING...');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');}}
+async function startCall(video){try{if(pc||localStream)return;callKind=video?'video':'voice';updateCallButton('connecting');setStatus(video?'VIDEO CONNECTING...':'VOICE CONNECTING...');startTimeout();activeIceServers=await loadIceServers();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!video});if(video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});const offer=await pc.createOffer({offerToReceiveAudio:true,offerToReceiveVideo:!!video});await pc.setLocalDescription(offer);sendSignal({type:'offer',sdp:pc.localDescription.sdp,video:!!video});setStatus(video?'VIDEO CALLING...':'VOICE CALLING...');updateCallButton('waiting');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');alert((video?'Camera and microphone':'Microphone')+' permission is required for calling.');}}
+async function acceptIncoming(){const x=incomingOffer;hideIncoming();if(!x)return;try{callKind=x.video?'video':'voice';updateCallButton('connecting');setStatus((x.video?'VIDEO':'VOICE')+' CONNECTING FROM '+(x.from||'UNKNOWN')+'...');startTimeout();activeIceServers=await loadIceServers();localStream=await navigator.mediaDevices.getUserMedia({audio:true,video:!!x.video});if(x.video){$('local').srcObject=localStream;$('local').play().catch(()=>{});showVideoMode();}makePeer(!!x.video);localStream.getTracks().forEach(t=>{pc.addTrack(t,localStream);});await pc.setRemoteDescription({type:'offer',sdp:x.sdp});await addPending();const answer=await pc.createAnswer();await pc.setLocalDescription(answer);sendSignal({type:'answer',sdp:pc.localDescription.sdp});setStatus(x.video?'VIDEO CONNECTING...':'VOICE CONNECTING...');}catch(e){console.error(e);hangup(false);setStatus('CALL FAILED');}}
 function rejectIncoming(){const x=incomingOffer;hideIncoming();if(x)sendSignal({type:'reject',from:x.from});setStatus('ONLINE');}
 async function signal(x){try{if(x.type==='offer'){if(pc||localStream){sendSignal({type:'busy'});return;}showIncoming(x);}else if(x.type==='answer'&&pc){await pc.setRemoteDescription({type:'answer',sdp:x.sdp});await addPending();}else if(x.type==='candidate'){if(pc&&pc.remoteDescription){try{await pc.addIceCandidate(x.candidate);}catch(e){console.warn('ICE add failed',e);}}else{pendingCandidates.push(x.candidate);}}else if(x.type==='hangup'){hangup(false);setStatus('CALL ENDED');}else if(x.type==='reject'){clearCallTimeout();updateCallButton('failed');hangup(false);setStatus('CALL REJECTED BY '+(x.from||'PEER'));}else if(x.type==='busy'){clearCallTimeout();setStatus('PEER BUSY');updateCallButton('failed');hangup(false);}}catch(e){console.error('signaling error',e);clearCallTimeout();setStatus('CALL FAILED');}}
 function hangup(send=true){clearCallTimeout();if(send)sendSignal({type:'hangup'});if(pc){pc.onicecandidate=null;pc.ontrack=null;pc.onconnectionstatechange=null;pc.oniceconnectionstatechange=null;try{pc.close();}catch(e){console.warn('PeerConnection close failed',e);}pc=null;}if(localStream){localStream.getTracks().forEach(track=>{try{track.stop();}catch(e){console.warn('Track stop failed',e);}});localStream=null;}pendingCandidates=[];hideIncoming();callKind='';hideVideoMode();const remote=$('remote');if(remote)remote.srcObject=null;const local=$('local');if(local)local.srcObject=null;$('chat').classList.remove('video-mode');$('voice').textContent='[start a...]';$('video').textContent='[start v...]';if(ws&&ws.readyState===WebSocket.OPEN)setStatus('ONLINE');}
-$('join').onclick=async()=>{name=$('name').value.trim();room=$('room').value.trim();if(!name||!room){alert('username and room_code required');return;}sessionStorage.setItem('twochatName',name);sessionStorage.setItem('twochatRoom',room);$('setup').classList.add('hidden');$('chat').style.display='flex';setStatus('CONNECTING...');await history();const proto=location.protocol==='https:'?'wss':'ws';ws=new WebSocket(proto+'://'+location.host+'/ws?room='+encodeURIComponent(room)+'&name='+encodeURIComponent(name));ws.onopen=()=>{setStatus('ONLINE');};ws.onclose=()=>{setStatus('DISCONNECTED');};ws.onerror=()=>{setStatus('CONNECTION ERROR');};
+$('join').onclick=async()=>{name=$('name').value.trim();room=$('room').value.trim();if(!name||!room){alert('username and room_code required');return;}sessionStorage.setItem('twochatName',name);sessionStorage.setItem('twochatRoom',room);$('setup').classList.add('hidden');$('chat').style.display='flex';setStatus('CONNECTING...');await history();const proto=location.protocol==='https:'?'wss':'ws';ws=new WebSocket(proto+'://'+location.host+'/ws?room='+encodeURIComponent(room)+'&name='+encodeURIComponent(name));ws.onopen=()=>{setStatus('ONLINE');if(presenceTimer)clearInterval(presenceTimer);presenceTimer=setInterval(()=>{if(ws&&ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify({type:'heartbeat'}));},15000);};ws.onclose=()=>{if(presenceTimer)clearInterval(presenceTimer);presenceTimer=null;setStatus('DISCONNECTED');};ws.onerror=()=>{setStatus('CONNECTION ERROR');};
 ws.onmessage = e => {
   try {
     const x = JSON.parse(e.data);
@@ -344,6 +346,27 @@ export default{
       const id=env.ROOMS.idFromName(room);
       return env.ROOMS.get(id).fetch(new Request('https://room/ws?'+new URLSearchParams({room,name}), request));
     }
+    if(url.pathname==='/api/ice-servers' && request.method==='GET'){
+      const fallback=[{urls:'stun:stun.cloudflare.com:3478'},{urls:'stun:stun.l.google.com:19302'},{urls:'stun:stun1.l.google.com:19302'}];
+      if(!env.TURN_KEY_ID||!env.TURN_API_TOKEN) return json({iceServers:fallback,turnAvailable:false},200);
+      try{
+        const response=await fetch('https://rtc.live.cloudflare.com/v1/turn/keys/'+encodeURIComponent(env.TURN_KEY_ID)+'/credentials/generate-ice-servers',{
+          method:'POST',
+          headers:{'Authorization':'Bearer '+env.TURN_API_TOKEN,'Content-Type':'application/json'},
+          body:JSON.stringify({ttl:43200})
+        });
+        if(!response.ok){
+          console.error('TURN credential request failed',response.status,await response.text());
+          return json({iceServers:fallback,turnAvailable:false},200);
+        }
+        const data=await response.json();
+        if(!Array.isArray(data.iceServers)||!data.iceServers.length) return json({iceServers:fallback,turnAvailable:false},200);
+        return json({iceServers:data.iceServers,turnAvailable:true},200);
+      }catch(error){
+        console.error('TURN credential generation failed',error);
+        return json({iceServers:fallback,turnAvailable:false},200);
+      }
+    }
     if(url.pathname==='/api/messages' && request.method==='GET'){
       const room=clean(url.searchParams.get('room'));
       if(!room) return json({error:'room required'},400);
@@ -440,49 +463,56 @@ function json(data,status){ return new Response(JSON.stringify(data),{status,hea
 export class Room {
   constructor(state) {
     this.state = state;
-    this.clients = new Map();   // WebSocket -> name
-    this.lastSeen = new Map();  // name -> timestamp (persists)
+    this.clients = new Map(); // WebSocket -> { name, lastActivity }
+    this.participants = new Set();
+    this.lastSeen = {};
+    this.ready = this.state.blockConcurrencyWhile(async () => {
+      const saved = await this.state.storage.get('presence-v1');
+      if (saved && typeof saved === 'object') {
+        this.participants = new Set(Array.isArray(saved.participants) ? saved.participants : []);
+        this.lastSeen = saved.lastSeen && typeof saved.lastSeen === 'object' ? saved.lastSeen : {};
+      }
+    });
   }
 
   async fetch(request) {
+    await this.ready;
     const url = new URL(request.url);
 
     if (url.pathname === '/broadcast' && request.method === 'POST') {
-      const msg = await request.json();
-      for (const ws of this.clients.keys()) {
-        try { ws.send(JSON.stringify(msg)); } catch (e) {}
-      }
+      const message = await request.json();
+      this.broadcast(message);
       return new Response('ok');
     }
 
     if (url.pathname === '/ws') {
       const pair = new WebSocketPair();
       const [client, server] = Object.values(pair);
-      const name = url.searchParams.get('name') || 'Guest';
+      const name = String(url.searchParams.get('name') || 'Guest').trim().slice(0, 128);
+      if (!name) return new Response('name required', { status: 400 });
       server.accept();
 
-      // Add the new client and update last seen
-      this.clients.set(server, name);
-      this.lastSeen.set(name, Date.now());
-
-      // Send the current status to ALL connected clients (including the new one)
-      this.sendStatusToAll();
+      this.clients.set(server, { name, lastActivity: Date.now() });
+      this.participants.add(name);
+      await this.persistPresence();
+      await this.sendStatusToAll();
 
       server.addEventListener('message', event => {
-        try {
-          const x = JSON.parse(event.data);
-          this.lastSeen.set(name, Date.now());
-          if (['offer', 'answer', 'candidate', 'hangup', 'reject', 'busy'].includes(x.type)) {
-            this.broadcast({ ...x, from: name }, server);
-          }
-        } catch (e) {}
+        this.handleClientMessage(server, name, event.data).catch(error => {
+          console.error('Room signaling message failed', error);
+        });
       });
 
       server.addEventListener('close', () => {
-        this.clients.delete(server);
-        this.lastSeen.set(name, Date.now());
-        // Notify remaining clients
-        this.sendStatusToAll();
+        this.handleDisconnect(server, name).catch(error => {
+          console.error('Room disconnect handling failed', error);
+        });
+      });
+
+      server.addEventListener('error', () => {
+        this.handleDisconnect(server, name).catch(error => {
+          console.error('Room socket error handling failed', error);
+        });
       });
 
       return new Response(null, { status: 101, webSocket: client });
@@ -491,30 +521,99 @@ export class Room {
     return new Response('not found', { status: 404 });
   }
 
-  // Send the current online/lastSeen status to every connected client
-  sendStatusToAll() {
-    const allNames = Array.from(this.lastSeen.keys());
+  async handleClientMessage(server, name, raw) {
+    const client = this.clients.get(server);
+    if (!client) return;
+    let message;
+    try {
+      message = JSON.parse(raw);
+    } catch {
+      return;
+    }
 
-    for (const [ws, name] of this.clients) {
-      // Find the other user (we assume at most 2 users)
-      const otherName = allNames.find(n => n !== name) || null;
-      const online = otherName ? this.clients.has(otherName) : false;
-      const lastSeen = otherName ? this.lastSeen.get(otherName) : null;
+    client.lastActivity = Date.now();
+    if (message.type === 'heartbeat' || message.type === 'presence') {
+      const pruned = await this.pruneStaleClients();
+      if (pruned) {
+        await this.persistPresence();
+        await this.sendStatusToAll();
+      }
+      return;
+    }
 
-      try {
-        ws.send(JSON.stringify({
-          type: 'peer',
-          online: online,
-          lastSeen: lastSeen
-        }));
-      } catch (e) {}
+    if (['offer', 'answer', 'candidate', 'hangup', 'reject', 'busy'].includes(message.type)) {
+      this.broadcast({ ...message, from: name }, server);
     }
   }
 
-  broadcast(obj, except) {
-    for (const ws of this.clients.keys()) {
-      if (ws === except) continue;
-      try { ws.send(JSON.stringify(obj)); } catch (e) {}
+  async handleDisconnect(server, name) {
+    const client = this.clients.get(server);
+    if (!client) return;
+    this.clients.delete(server);
+    if (!this.hasActiveClient(name)) this.lastSeen[name] = Date.now();
+    await this.persistPresence();
+    await this.sendStatusToAll();
+  }
+
+  hasActiveClient(name) {
+    for (const client of this.clients.values()) {
+      if (client.name === name) return true;
+    }
+    return false;
+  }
+
+  async pruneStaleClients() {
+    const now = Date.now();
+    let changed = false;
+    for (const [socket, client] of this.clients) {
+      if (now - client.lastActivity <= 45000) continue;
+      this.clients.delete(socket);
+      if (!this.hasActiveClient(client.name)) {
+        this.lastSeen[client.name] = client.lastActivity;
+      }
+      try { socket.close(1001, 'Presence timeout'); } catch {}
+      changed = true;
+    }
+    return changed;
+  }
+
+  async persistPresence() {
+    await this.state.storage.put('presence-v1', {
+      participants: Array.from(this.participants),
+      lastSeen: this.lastSeen
+    });
+  }
+
+  async sendStatusToAll() {
+    await this.pruneStaleClients();
+    const active = Array.from(this.clients.values());
+    for (const [socket, client] of this.clients) {
+      const onlinePeer = active.find(peer => peer.name !== client.name) || null;
+      const otherNames = Array.from(this.participants).filter(peerName => peerName !== client.name);
+      otherNames.sort((a, b) => Number(this.lastSeen[b] || 0) - Number(this.lastSeen[a] || 0));
+      const peerName = onlinePeer ? onlinePeer.name : (otherNames[0] || null);
+      const status = {
+        type: 'peer',
+        online: !!onlinePeer,
+        peerName,
+        lastSeen: onlinePeer || !peerName ? null : (Number(this.lastSeen[peerName]) || null)
+      };
+      try {
+        socket.send(JSON.stringify(status));
+      } catch (error) {
+        console.warn('Could not send room presence status', error);
+      }
+    }
+  }
+
+  broadcast(message, except = null) {
+    for (const socket of this.clients.keys()) {
+      if (socket === except) continue;
+      try {
+        socket.send(JSON.stringify(message));
+      } catch (error) {
+        console.warn('Room broadcast failed', error);
+      }
     }
   }
 }
