@@ -585,7 +585,8 @@ export class Room {
   }
 
   async sendStatusToAll() {
-    await this.pruneStaleClients();
+    const pruned = await this.pruneStaleClients();
+    if (pruned) await this.persistPresence();
     const active = Array.from(this.clients.values());
     for (const [socket, client] of this.clients) {
       const onlinePeer = active.find(peer => peer.name !== client.name) || null;
