@@ -1,2 +1,2 @@
 // Cloudflare Worker backend for TwoChat.
-window.TWOCHAT_API = "https://twochat.dsannigrahi5956.workers.dev";
+window.TWOCHAT_API = "https://asus.redmipad1.workers.dev";
